@@ -4,6 +4,17 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: "Commit SHA to stamp into the build"
+        required: true
+        type: string
+      release_version:
+        description: "Version string to stamp into the build"
+        required: true
+        default: "0.0.0-codex"
+        type: string
   workflow_call:
     inputs:
       release_commit:
