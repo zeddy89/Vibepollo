@@ -269,6 +269,60 @@ jobs:
         run: |
           choco install wixtoolset -y
 
+      - name: Restore SudoVDA driver artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerUrl = "https://github.com/Nonary/Vibepollo/releases/download/1.15.3/VibepolloSetup.exe"
+          $expectedSha256 = "fcde68d7f6cbb09a9b26a2ed193a9318fbc4ebefd40ef80419c1315502f74dca"
+          $downloadDir = Join-Path $env:RUNNER_TEMP "sudovda-restore"
+          $installerPath = Join-Path $downloadDir "VibepolloSetup.exe"
+          $msiPath = Join-Path $downloadDir "Vibepollo.msi"
+          $extractDir = Join-Path $downloadDir "msi-extract"
+          $targetDir = Join-Path $PWD "src_assets/windows/drivers/sudovda"
+          New-Item -ItemType Directory -Force -Path $downloadDir, $extractDir | Out-Null
+
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installerPath).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Unexpected VibepolloSetup.exe SHA256: $actualSha256"
+          }
+
+          $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path $installerPath))
+          $stream = $assembly.GetManifestResourceStream("Payload.msi")
+          if ($null -eq $stream) {
+            throw "Payload.msi resource not found in VibepolloSetup.exe"
+          }
+          $fileStream = [IO.File]::Create($msiPath)
+          try {
+            $stream.CopyTo($fileStream)
+          } finally {
+            $fileStream.Dispose()
+            $stream.Dispose()
+          }
+
+          $process = Start-Process -FilePath "msiexec.exe" `
+            -ArgumentList @("/a", "`"$msiPath`"", "/qn", "TARGETDIR=`"$extractDir`"") `
+            -NoNewWindow `
+            -PassThru `
+            -Wait
+          if ($process.ExitCode -ne 0) {
+            throw "Administrative MSI extraction failed with exit code $($process.ExitCode)"
+          }
+
+          foreach ($name in @("SudoVDA.dll", "nefconc.exe")) {
+            $source = Get-ChildItem -Path $extractDir -Recurse -File -Filter $name | Select-Object -First 1
+            if ($null -eq $source) {
+              throw "Unable to find $name in extracted Vibepollo installer"
+            }
+            Copy-Item -Force -Path $source.FullName -Destination (Join-Path $targetDir $name)
+            $size = (Get-Item (Join-Path $targetDir $name)).Length
+            if ($size -le 0) {
+              throw "Restored $name is empty"
+            }
+            Write-Host "Restored $name ($size bytes)"
+          }
+
       - name: Build Windows
         shell: msys2 {0}
         env:
