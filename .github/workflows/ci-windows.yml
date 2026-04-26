@@ -367,14 +367,31 @@ jobs:
           # build custom installer executable that wraps the MSI payload
           powershell -NoProfile -ExecutionPolicy Bypass -File ../packaging/windows/bootstrapper/build_bootstrapper.ps1 -BuildDir "$(cygpath -w "$(pwd)")"
 
-          msi_file=$(ls -1 ./cpack_artifacts/*.msi | head -n 1)
-          installer_exe=$(ls -1 ./cpack_artifacts/VibepolloSetup.exe ./cpack_artifacts/*-installer.exe 2>/dev/null | head -n 1)
-          portable_zip=$(ls -1 ./cpack_artifacts/*.zip | head -n 1)
+          shopt -s nullglob
+          msi_files=(./cpack_artifacts/*.msi)
+          installer_files=(./cpack_artifacts/VibepolloSetup.exe ./cpack_artifacts/*-installer.exe)
+          portable_files=(./cpack_artifacts/*.zip)
+
+          if [ "${#msi_files[@]}" -eq 0 ]; then
+            echo "No MSI artifact found"
+            ls -la ./cpack_artifacts
+            exit 1
+          fi
+          if [ "${#installer_files[@]}" -eq 0 ]; then
+            echo "No installer EXE artifact found"
+            ls -la ./cpack_artifacts
+            exit 1
+          fi
+          if [ "${#portable_files[@]}" -eq 0 ]; then
+            echo "No portable ZIP artifact found"
+            ls -la ./cpack_artifacts
+            exit 1
+          fi
 
           # move
-          mv "${msi_file}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.msi
-          mv "${installer_exe}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.exe
-          mv "${portable_zip}" ../artifacts/Vibepollo-${{ matrix.name }}-portable.zip
+          mv "${msi_files[0]}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.msi
+          mv "${installer_files[0]}" ../artifacts/Vibepollo-${{ matrix.name }}-installer.exe
+          mv "${portable_files[0]}" ../artifacts/Vibepollo-${{ matrix.name }}-portable.zip
 
       - name: Run tests
         id: test
