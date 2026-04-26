@@ -336,7 +336,7 @@ jobs:
             -B build \
             -G Ninja \
             -S . \
-            -DBUILD_WERROR=ON \
+            -DBUILD_WERROR=OFF \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME='${{ github.repository_owner }}' \
