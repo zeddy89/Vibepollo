@@ -1,4 +1,14 @@
 import { GamepadFeedbackMessage, InputMessage } from '@/types/webrtc';
+import {
+  buildGamepadStatus,
+  createGamepadMappingProfile,
+  readGamepadMotion,
+  readGamepadSnapshot,
+  type GamepadMappingProfile,
+  type GamepadStatus,
+  type GamepadVector,
+  type GamepadSnapshot,
+} from '@/utils/webrtc/gamepadMapper';
 
 export interface InputCaptureMetrics {
   lastMoveDelayMs?: number;
@@ -15,6 +25,7 @@ export interface InputCaptureMetrics {
 interface InputCaptureOptions {
   video?: HTMLVideoElement | null;
   onMetrics?: (metrics: InputCaptureMetrics) => void;
+  onGamepads?: (gamepads: GamepadStatus[]) => void;
   gamepad?: boolean;
   shouldDrop?: (payload: InputMessage) => boolean;
 }
@@ -220,7 +231,6 @@ function normalizeWheelDelta(delta: number, deltaMode: number): number {
 }
 
 const MAX_GAMEPADS = 16;
-const AXIS_DEADZONE = 0.08;
 const MOTION_SEND_INTERVAL_MS = 16;
 const MOTION_DIFF_THRESHOLD = 0.1;
 const GAMEPAD_STATE_HEARTBEAT_MS = 500;
@@ -228,80 +238,8 @@ const GAMEPAD_STATE_HEARTBEAT_MS = 500;
 const activeGamepads = new Map<number, Gamepad>();
 const motionRequestState = new Map<number, { gyro: boolean; accel: boolean }>();
 
-const GAMEPAD_TYPE = {
-  unknown: 0,
-  xbox: 1,
-  playstation: 2,
-  nintendo: 3,
-} as const;
-
-const GAMEPAD_CAPS = {
-  analogTriggers: 0x01,
-  touchpad: 0x08,
-  accel: 0x10,
-  gyro: 0x20,
-} as const;
-
-const GAMEPAD_BUTTONS = {
-  dpadUp: 0x0001,
-  dpadDown: 0x0002,
-  dpadLeft: 0x0004,
-  dpadRight: 0x0008,
-  start: 0x0010,
-  back: 0x0020,
-  leftStick: 0x0040,
-  rightStick: 0x0080,
-  leftButton: 0x0100,
-  rightButton: 0x0200,
-  home: 0x0400,
-  a: 0x1000,
-  b: 0x2000,
-  x: 0x4000,
-  y: 0x8000,
-  paddle1: 0x010000,
-  paddle2: 0x020000,
-  paddle3: 0x040000,
-  paddle4: 0x080000,
-  touchpadButton: 0x100000,
-  miscButton: 0x200000,
-} as const;
-
-const STANDARD_BUTTON_MAP = new Map<number, number>([
-  [0, GAMEPAD_BUTTONS.a],
-  [1, GAMEPAD_BUTTONS.b],
-  [2, GAMEPAD_BUTTONS.x],
-  [3, GAMEPAD_BUTTONS.y],
-  [4, GAMEPAD_BUTTONS.leftButton],
-  [5, GAMEPAD_BUTTONS.rightButton],
-  [8, GAMEPAD_BUTTONS.back],
-  [9, GAMEPAD_BUTTONS.start],
-  [10, GAMEPAD_BUTTONS.leftStick],
-  [11, GAMEPAD_BUTTONS.rightStick],
-  [12, GAMEPAD_BUTTONS.dpadUp],
-  [13, GAMEPAD_BUTTONS.dpadDown],
-  [14, GAMEPAD_BUTTONS.dpadLeft],
-  [15, GAMEPAD_BUTTONS.dpadRight],
-  [16, GAMEPAD_BUTTONS.home],
-  [17, GAMEPAD_BUTTONS.miscButton],
-]);
-
-type GamepadVector = [number, number, number];
-
-interface GamepadSnapshot {
-  buttons: number;
-  lt: number;
-  rt: number;
-  lsX: number;
-  lsY: number;
-  rsX: number;
-  rsY: number;
-}
-
 interface GamepadMeta {
-  buttonMap: Map<number, number>;
-  supportedButtons: number;
-  capabilities: number;
-  type: number;
+  profile: GamepadMappingProfile;
   lastGyro?: GamepadVector;
   lastAccel?: GamepadVector;
   lastGyroAt?: number;
@@ -309,126 +247,6 @@ interface GamepadMeta {
   connected: boolean;
   needsResync: boolean;
   lastStateSentAt?: number;
-}
-
-function resolveGamepadType(gamepad: Gamepad): number {
-  const id = (gamepad.id || '').toLowerCase();
-  if (id.includes('nintendo') || id.includes('switch') || id.includes('joy-con')) {
-    return GAMEPAD_TYPE.nintendo;
-  }
-  if (
-    id.includes('playstation') ||
-    id.includes('dualshock') ||
-    id.includes('dualsense') ||
-    id.includes('ps4') ||
-    id.includes('ps5')
-  ) {
-    return GAMEPAD_TYPE.playstation;
-  }
-  if (id.includes('xbox')) {
-    return GAMEPAD_TYPE.xbox;
-  }
-  if (id.includes('wireless controller')) {
-    return GAMEPAD_TYPE.playstation;
-  }
-  return GAMEPAD_TYPE.unknown;
-}
-
-function resolveButtonMap(gamepad: Gamepad, type: number): Map<number, number> {
-  const map = new Map(STANDARD_BUTTON_MAP);
-  if (type === GAMEPAD_TYPE.playstation) {
-    map.set(17, GAMEPAD_BUTTONS.touchpadButton);
-  }
-  if (gamepad.buttons.length > 17) {
-    map.set(18, GAMEPAD_BUTTONS.paddle1);
-  }
-  if (gamepad.buttons.length > 18) {
-    map.set(19, GAMEPAD_BUTTONS.paddle2);
-  }
-  if (gamepad.buttons.length > 19) {
-    map.set(20, GAMEPAD_BUTTONS.paddle3);
-  }
-  if (gamepad.buttons.length > 20) {
-    map.set(21, GAMEPAD_BUTTONS.paddle4);
-  }
-  return map;
-}
-
-function applyDeadzone(value: number, deadzone: number): number {
-  const abs = Math.abs(value);
-  if (abs <= deadzone) return 0;
-  const scaled = (abs - deadzone) / (1 - deadzone);
-  return Math.min(1, Math.max(0, scaled)) * Math.sign(value);
-}
-
-function toInt16(value: number): number {
-  const clamped = Math.min(1, Math.max(-1, value));
-  return Math.round(clamped * 32767);
-}
-
-function toUint8(value: number): number {
-  const clamped = Math.min(1, Math.max(0, value));
-  return Math.round(clamped * 255);
-}
-
-function readButtons(gamepad: Gamepad, buttonMap: Map<number, number>): number {
-  let mask = 0;
-  buttonMap.forEach((bit, index) => {
-    const button = gamepad.buttons[index];
-    if (button?.pressed) {
-      mask |= bit;
-    }
-  });
-  return mask;
-}
-
-function readGamepadState(gamepad: Gamepad, buttonMap: Map<number, number>): GamepadSnapshot {
-  const axes = gamepad.axes || [];
-  const lx = applyDeadzone(axes[0] ?? 0, AXIS_DEADZONE);
-  const ly = applyDeadzone(-(axes[1] ?? 0), AXIS_DEADZONE);
-  const rx = applyDeadzone(axes[2] ?? 0, AXIS_DEADZONE);
-  const ry = applyDeadzone(-(axes[3] ?? 0), AXIS_DEADZONE);
-  const lt = toUint8(gamepad.buttons[6]?.value ?? 0);
-  const rt = toUint8(gamepad.buttons[7]?.value ?? 0);
-  return {
-    buttons: readButtons(gamepad, buttonMap),
-    lt,
-    rt,
-    lsX: toInt16(lx),
-    lsY: toInt16(ly),
-    rsX: toInt16(rx),
-    rsY: toInt16(ry),
-  };
-}
-
-function readMotionVector(value: unknown): GamepadVector | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const array = Array.isArray(value)
-    ? value
-    : (value as { length?: number; [index: number]: number });
-  if (typeof array.length !== 'number' || array.length < 3) return undefined;
-  const x = Number(array[0]);
-  const y = Number(array[1]);
-  const z = Number(array[2]);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
-  return [x, y, z];
-}
-
-function readGamepadMotion(gamepad: Gamepad): { gyro?: GamepadVector; accel?: GamepadVector } {
-  const pose = (
-    gamepad as { pose?: { angularVelocity?: unknown; linearAcceleration?: unknown } | null }
-  ).pose;
-  const motion = (
-    gamepad as { motion?: { angularVelocity?: unknown; linearAcceleration?: unknown } }
-  ).motion;
-  const motionData = (
-    gamepad as { motionData?: { angularVelocity?: unknown; linearAcceleration?: unknown } }
-  ).motionData;
-  const source = motion ?? motionData ?? pose ?? null;
-  if (!source) return {};
-  const gyro = readMotionVector(source.angularVelocity);
-  const accel = readMotionVector(source.linearAcceleration);
-  return { gyro, accel };
 }
 
 function motionChanged(previous: GamepadVector | undefined, next: GamepadVector): boolean {
@@ -530,6 +348,7 @@ export function attachInputCapture(
 ): () => void {
   const video = options.video ?? null;
   const onMetrics = options.onMetrics;
+  const onGamepads = options.onGamepads;
   const gamepadEnabled = options.gamepad ?? true;
   const shouldDrop = options.shouldDrop;
   let queuedMove: InputMessage | null = null;
@@ -925,48 +744,27 @@ export function attachInputCapture(
   const gamepadStates = new Map<number, GamepadSnapshot>();
   const gamepadMeta = new Map<number, GamepadMeta>();
   let gamepadRaf = 0;
+  let lastGamepadStatusSignature = '';
 
-  const ensureGamepadMeta = (gamepad: Gamepad) => {
-    const existing = gamepadMeta.get(gamepad.index);
+  const ensureGamepadMeta = (gamepad: Gamepad, index: number) => {
+    const existing = gamepadMeta.get(index);
     if (existing) return existing;
-    const type = resolveGamepadType(gamepad);
-    const buttonMap = resolveButtonMap(gamepad, type);
-    let supportedButtons = 0;
-    buttonMap.forEach((bit) => {
-      supportedButtons |= bit;
-    });
-    const motion = readGamepadMotion(gamepad);
-    const hasGyro = Boolean(motion.gyro);
-    const hasAccel = Boolean(motion.accel);
-    let capabilities = 0;
-    if (gamepad.buttons.length > 6 || gamepad.buttons.length > 7) {
-      capabilities |= GAMEPAD_CAPS.analogTriggers;
-    }
-    if (hasAccel || type === GAMEPAD_TYPE.playstation) {
-      capabilities |= GAMEPAD_CAPS.accel;
-    }
-    if (hasGyro || type === GAMEPAD_TYPE.playstation) {
-      capabilities |= GAMEPAD_CAPS.gyro;
-    }
     const meta: GamepadMeta = {
-      buttonMap,
-      supportedButtons,
-      capabilities,
-      type,
+      profile: createGamepadMappingProfile(gamepad),
       connected: false,
       needsResync: true,
     };
-    gamepadMeta.set(gamepad.index, meta);
+    gamepadMeta.set(index, meta);
     return meta;
   };
 
-  const sendGamepadConnect = (gamepad: Gamepad, meta: GamepadMeta) => {
+  const sendGamepadConnect = (index: number, meta: GamepadMeta) => {
     const payload: InputMessage = {
       type: 'gamepad_connect',
-      id: gamepad.index,
-      gamepadType: meta.type,
-      capabilities: meta.capabilities,
-      supportedButtons: meta.supportedButtons,
+      id: index,
+      gamepadType: meta.profile.type,
+      capabilities: meta.profile.capabilities,
+      supportedButtons: meta.profile.supportedButtons,
       ts: performance.now(),
     };
     return sendPayload(payload);
@@ -1032,6 +830,7 @@ export function attachInputCapture(
     const pads = getGamepads();
     let activeMask = 0;
     const seen = new Set<number>();
+    const statuses: GamepadStatus[] = [];
     for (const [padIndex, pad] of pads.entries()) {
       if (!pad) continue;
       if (!isGamepadConnected(pad)) continue;
@@ -1040,16 +839,17 @@ export function attachInputCapture(
       activeMask |= 1 << index;
       seen.add(index);
       activeGamepads.set(index, pad);
-      const meta = ensureGamepadMeta(pad);
+      const meta = ensureGamepadMeta(pad, index);
+      statuses.push(buildGamepadStatus(index, meta.profile));
       if (!meta.connected) {
-        if (sendGamepadConnect(pad, meta)) {
+        if (sendGamepadConnect(index, meta)) {
           meta.connected = true;
           meta.needsResync = true;
         } else {
           meta.needsResync = true;
         }
       }
-      const snapshot = readGamepadState(pad, meta.buttonMap);
+      const snapshot = readGamepadSnapshot(pad, meta.profile);
       const previous = gamepadStates.get(index);
       const stateChanged =
         !previous ||
@@ -1069,9 +869,9 @@ export function attachInputCapture(
           id: index,
           activeMask,
           buttons: snapshot.buttons,
-          gamepadType: meta.type,
-          capabilities: meta.capabilities,
-          supportedButtons: meta.supportedButtons,
+          gamepadType: meta.profile.type,
+          capabilities: meta.profile.capabilities,
+          supportedButtons: meta.profile.supportedButtons,
           lt: snapshot.lt,
           rt: snapshot.rt,
           lsX: snapshot.lsX,
@@ -1093,6 +893,15 @@ export function attachInputCapture(
       const motion = readGamepadMotion(pad);
       if (motion.gyro || motion.accel) {
         maybeSendMotion(index, meta, motion, now);
+      }
+    }
+    if (onGamepads) {
+      const signature = statuses
+        .map((status) => `${status.index}:${status.name}:${status.typeLabel}:${status.source}`)
+        .join('|');
+      if (signature !== lastGamepadStatusSignature) {
+        lastGamepadStatusSignature = signature;
+        onGamepads(statuses);
       }
     }
     if (gamepadMeta.size) {
@@ -1205,5 +1014,6 @@ export function attachInputCapture(
     }
     activeGamepads.clear();
     motionRequestState.clear();
+    onGamepads?.([]);
   };
 }

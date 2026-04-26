@@ -256,6 +256,14 @@
           </button>
 
           <div class="quick-toggles">
+            <div
+              v-if="isConnected && gamepadStatuses.length"
+              class="controller-status"
+              :title="controllerStatusTitle"
+            >
+              <i class="fas fa-gamepad"></i>
+              <span>{{ controllerStatusLabel }}</span>
+            </div>
             <label class="toggle" title="Enable input forwarding">
               <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
               <span>Input</span>
@@ -518,6 +526,7 @@ import {
   releaseKeyboardLock,
   requestKeyboardLock,
 } from '@/utils/webrtc/input';
+import type { GamepadStatus } from '@/utils/webrtc/gamepadMapper';
 import {
   EncodingType,
   InputMessage,
@@ -1046,7 +1055,21 @@ const videoSizeLabel = computed(() => {
 
 const inputMetrics = ref<InputCaptureMetrics>({});
 const inputBufferedAmount = ref<number | null>(null);
+const gamepadStatuses = ref<GamepadStatus[]>([]);
 const INPUT_BUFFER_DROP_THRESHOLD_BYTES = 1024;
+
+const controllerStatusLabel = computed(() => {
+  const first = gamepadStatuses.value[0];
+  if (!first) return '';
+  const suffix = gamepadStatuses.value.length > 1 ? ` +${gamepadStatuses.value.length - 1}` : '';
+  return `${first.typeLabel} (${first.source})${suffix}`;
+});
+
+const controllerStatusTitle = computed(() =>
+  gamepadStatuses.value
+    .map((status) => `${status.name}: ${status.typeLabel} ${status.source} mapping`)
+    .join('\n'),
+);
 
 const shouldDropInput = (payload: InputMessage) => {
   const buffered = client.inputChannelBufferedAmount ?? 0;
@@ -2758,6 +2781,9 @@ watch(
         onMetrics: (metrics) => {
           inputMetrics.value = metrics;
         },
+        onGamepads: (statuses) => {
+          gamepadStatuses.value = statuses;
+        },
         shouldDrop: shouldDropInput,
       },
     );
@@ -3840,6 +3866,31 @@ watch(
   align-items: center;
   gap: 0.75rem;
   margin-left: auto;
+}
+
+.controller-status {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 9rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid rgb(var(--color-primary) / 0.25);
+  border-radius: 0.375rem;
+  background: rgb(var(--color-primary) / 0.08);
+  color: var(--text-2);
+  font-size: 0.6875rem;
+}
+
+.controller-status i {
+  flex-shrink: 0;
+  color: rgb(var(--color-primary));
+}
+
+.controller-status span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toggle {
